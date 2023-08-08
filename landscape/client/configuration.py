@@ -7,9 +7,12 @@ import getpass
 import io
 import os
 import pwd
+import shlex
 import sys
 import textwrap
 from functools import partial
+from urllib.parse import urlparse
+
 
 from landscape.client.broker.amp import RemoteBrokerConnector
 from landscape.client.broker.config import BrokerConfiguration
@@ -28,6 +31,7 @@ from landscape.lib.fetch import fetch
 from landscape.lib.fetch import FetchError
 from landscape.lib.fs import create_binary_file
 from landscape.lib.persist import Persist
+from landscape.lib.network import get_fqdn
 from landscape.lib.tag import is_valid_tag
 from landscape.lib.twisted_util import gather_results
 
@@ -238,6 +242,13 @@ class LandscapeSetupConfiguration(BrokerConfiguration):
             "registered else returns {}. Displays "
             "registration info.".format(EXIT_NOT_REGISTERED),
         )
+        parser.add_option(
+            "--landscape-domain",
+            default="",
+            help="The fully qualified domain name"
+            "of your Landscape Server."
+            "(example: landscape.yourdomain.com)",
+        )
         return parser
 
 
@@ -256,6 +267,15 @@ class LandscapeSetupScript:
     def __init__(self, config):
         self.config = config
 
+    def get_domain(self):
+        domain = self.config.landscape_domain
+        if domain:
+            return domain
+        url = self.config.url
+        if url:
+            return urlparse(url).netloc
+        return "landscape.canonical.com"
+
     def prompt_get_input(self, msg, required):
         """Prompt the user on the terminal for a value
 
@@ -270,7 +290,7 @@ class LandscapeSetupScript:
                 break
             show_help("This option is required to configure Landscape.")
 
-    def prompt(self, option, msg, required=False):
+    def prompt(self, option, msg, required=False, default=None):
         """Prompt the user on the terminal for a value.
 
         @param option: The attribute of C{self.config} that contains the
@@ -278,8 +298,11 @@ class LandscapeSetupScript:
         @param msg: The message to prompt the user with (via C{input}).
         @param required: If True, the user will be required to enter a value
             before continuing.
+        @param default: Default only if set and no current value present
         """
-        default = getattr(self.config, option, None)
+        cur_value = getattr(self.config, option, None)
+        if cur_value:
+            default = cur_value
         if default:
             msg += f" [{default}]: "
         else:
@@ -288,6 +311,8 @@ class LandscapeSetupScript:
         result = self.prompt_get_input(msg, required)
         if result:
             setattr(self.config, option, result)
+        elif default:
+            setattr(self.config, option, default)
 
     def password_prompt(self, option, msg, required=False):
         """Prompt the user on the terminal for a password and mask the value.
@@ -324,46 +349,42 @@ class LandscapeSetupScript:
         show_help(
             """
             The computer title you provide will be used to represent this
-            computer in the Landscape user interface. It's important to use
-            a title that will allow the system to be easily recognized when
-            it appears on the pending computers page.
+            computer in the Landscape dashboard.
             """,
         )
-
-        self.prompt("computer_title", "This computer's title", True)
+        self.prompt("computer_title", "This computer's title", False, default=get_fqdn())
 
     def query_account_name(self):
         if "account_name" in self.config.get_command_line_options():
             return
 
-        show_help(
+        if not self.config.landscape_domain:
+            show_help(
             """
             You must now specify the name of the Landscape account you
             want to register this computer with. Your account name is shown
             under 'Account name' at https://landscape.canonical.com .
-            """,
-        )
-
-        self.prompt("account_name", "Account name", True)
+            """,)
+            self.prompt("account_name", "Account name", True)
+        else:
+            self.config.account_name = "standalone"
 
     def query_registration_key(self):
         command_line_options = self.config.get_command_line_options()
         if "registration_key" in command_line_options:
             return
 
+
         show_help(
             f"""
-            A registration key may be associated with your Landscape
-            account to prevent unauthorized registration attempts.  This
-            is not your personal login password.  It is optional, and unless
-            explicitly set on the server, it may be skipped here.
+            A Registration Key prevents unauthorized registration attempts.
 
-            If you don't remember the registration key you can find it
-            at https://landscape.canonical.com/account/{self.config.account_name}
+            Provide the Registration Key found at: 
+            https://{self.get_domain()}/account/{self.config.account_name}
             """,  # noqa: E501
         )
 
-        self.password_prompt("registration_key", "Account registration key")
+        self.password_prompt("registration_key", "(Optional) Registration Key")
 
     def query_proxies(self):
         options = self.config.get_command_line_options()
@@ -372,10 +393,8 @@ class LandscapeSetupScript:
 
         show_help(
             """
-            The Landscape client communicates with the server over HTTP and
-            HTTPS.  If your network requires you to use a proxy to access HTTP
-            and/or HTTPS web sites, please provide the address of these
-            proxies now.  If you don't use a proxy, leave these fields empty.
+            If your network requires you to use a proxy, provide the address of these
+            proxies now. 
             """,
         )
 
@@ -486,32 +505,71 @@ class LandscapeSetupScript:
             else:
                 break
 
-    def show_header(self):
+    def query_landscape_edition(self):
         show_help(
+            """Manage this machine with Landscape (https://ubuntu.com/landscape):
             """
-            This script will interactively set up the Landscape client. It will
-            ask you a few questions about this computer and your Landscape
-            account, and will submit that information to the Landscape server.
-            After this computer is registered it will need to be approved by an
-            account administrator on the pending computers page.
-
-            Please see https://landscape.canonical.com for more information.
-            """,
         )
+        options = self.config.get_command_line_options()
+        if "ping_url" in options:
+            if "url" in options:
+                return
+        if prompt_yes_no("Will you be using your own Self-Hosted Landscape installation?", default=False):
+            show_help(
+            "Provide the fully qualified domain name "
+            "of your Landscape Server e.g. "
+            "landscape.yourdomain.com",            )
+            self.prompt("landscape_domain", "Landscape Domain", True, default=self.get_domain())
+            self.config.ping_url = f"http://{self.config.landscape_domain}/ping"
+            self.config.url = f"https://{self.config.landscape_domain}/message-system"
+        else:
+            self.config.landscape_domain = ""
+            self.config.ping_url = None
+            self.config.url = None
+            if self.config.account_name == "standalone":
+                self.config.account_name = None
+
+    def show_summary(self):
+        show_help(f"""A summary of the provided information:
+                  
+                    Computer's Title: {self.config.computer_title}
+                    Account Name: {self.config.account_name}
+                    Landscape FQDN: {self.get_domain()}
+                    Registration Key: {True if self.config.registration_key else False}
+        """)
+        if self.config.http_proxy or self.config.https_proxy:
+            show_help(f"""HTTPS Proxy:  {self.config.https_proxy}
+                        HTTP  Proxy: {self.config.http_proxy}""")
+            
+        params = ("computer_title", "account_name", "url", "ping_url", "registration_key", "https_proxy", "http_proxy")
+        cmd = ["sudo", "landscape-config"]
+        for param in params:
+            value = self.config.get(param)
+            if value:
+                cmd.append("--" + param.replace("_", "-"))
+                if param == "registration_key":
+                    cmd.append("HIDDEN")
+                else:
+                    cmd.append(shlex.quote(value))
+        show_help("The landscape-config parameters to repeat this registration"
+                  " on another machine are:")
+        show_help(" ".join(cmd))
+
+        #if not prompt_yes_no(f"Do you wish to register this machine to {self.get_domain()}?", default=True):
+        #    sys.exit(EXIT_NOT_REGISTERED)
+            
 
     def run(self):
         """Kick off the interactive process which prompts the user for data.
 
         Data will be saved to C{self.config}.
         """
-        self.show_header()
+        self.query_landscape_edition()
         self.query_computer_title()
         self.query_account_name()
         self.query_registration_key()
         self.query_proxies()
-        self.query_script_plugin()
-        self.query_access_group()
-        self.query_tags()
+        self.show_summary()
 
 
 def setup_init_script_and_start_client():
@@ -598,15 +656,7 @@ def setup(config):
         if config.silent:
             setup_init_script_and_start_client()
         elif not sysvconfig.is_configured_to_run():
-            answer = prompt_yes_no(
-                "\nThe Landscape client must be started "
-                "on boot to operate correctly.\n\n"
-                "Start Landscape client on boot?",
-            )
-            if answer:
-                setup_init_script_and_start_client()
-            else:
-                sys.exit("Aborting Landscape configuration")
+            setup_init_script_and_start_client()
 
     setup_http_proxy(config)
     check_account_name_and_password(config)
@@ -805,7 +855,7 @@ def report_registration_outcome(what_happened, print=print):
     human-readable form.
     """
     messages = {
-        "success": "System successfully registered.",
+        "success": "Registration request sent successfully.",
         "unknown-account": "Invalid account name or registration key.",
         "max-pending-computers": (
             "Maximum number of computers pending approval reached. ",
