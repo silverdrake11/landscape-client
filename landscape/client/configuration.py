@@ -524,10 +524,10 @@ class LandscapeSetupScript:
             self.config.url = f"https://{self.config.landscape_domain}/message-system"
         else:
             self.config.landscape_domain = ""
-            self.config.ping_url = None
-            self.config.url = None
+            self.config.ping_url = ""
+            self.config.url = ""
             if self.config.account_name == "standalone":
-                self.config.account_name = None
+                self.config.account_name = ""
 
     def show_summary(self):
         show_help(f"""A summary of the provided information:
