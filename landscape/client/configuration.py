@@ -550,10 +550,10 @@ class LandscapeSetupScript:
         for param in params:
             value = self.config.get(param)
             if value:
-                cmd.append("--" + param.replace("_", "-"))
                 if param in self.config._command_line_defaults:
                     if value == self.config._command_line_defaults[param]:
                         continue
+                cmd.append("--" + param.replace("_", "-"))
                 if param == "registration_key":
                     cmd.append("HIDDEN")
                 else:
