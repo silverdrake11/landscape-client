@@ -514,6 +514,10 @@ class LandscapeSetupScript:
         if "ping_url" in options:
             if "url" in options:
                 return
+        if "landscape_domain" in options:
+            self.config.ping_url = f"http://{self.config.landscape_domain}/ping"
+            self.config.url = f"https://{self.config.landscape_domain}/message-system"
+            return
         if prompt_yes_no("Will you be using your own Self-Hosted Landscape installation?", default=False):
             show_help(
             "Provide the fully qualified domain name "
@@ -524,8 +528,8 @@ class LandscapeSetupScript:
             self.config.url = f"https://{self.config.landscape_domain}/message-system"
         else:
             self.config.landscape_domain = ""
-            self.config.ping_url = ""
-            self.config.url = ""
+            self.config.ping_url = self.config._command_line_defaults["ping_url"]
+            self.config.url = self.config._command_line_defaults["url"]
             if self.config.account_name == "standalone":
                 self.config.account_name = ""
 
@@ -547,6 +551,9 @@ class LandscapeSetupScript:
             value = self.config.get(param)
             if value:
                 cmd.append("--" + param.replace("_", "-"))
+                if param in self.config._command_line_defaults:
+                    if value == self.config._command_line_defaults[param]:
+                        continue
                 if param == "registration_key":
                     cmd.append("HIDDEN")
                 else:
